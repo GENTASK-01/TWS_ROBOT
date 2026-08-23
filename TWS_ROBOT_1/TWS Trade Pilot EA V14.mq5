@@ -3,7 +3,7 @@
 //|                                     Copyright 2026, Official TWS |
 //| Build Target: MetaTrader 5 Build 6140                            |
 //| Resolution: BMER-PROMPT-v1.0 | Mode: A                          |
-//| Session: Iteration 2                                             |
+//| Session: Iteration 3                                             |
 //+------------------------------------------------------------------+
 #property copyright "Official TWS"
 #property link      "https://www.tradewithsanchit.com"
@@ -505,6 +505,31 @@ void SwitchToManagementTimeframe(const string announceLine)
   }
 
 //+------------------------------------------------------------------+
+//| Reconcile position state after management-side synchronous deals |
+//|                                                                  |
+//| OrderSend callbacks can arrive before the terminal removes the    |
+//| closed position from the live pool.  A post-management recount    |
+//| therefore provides the authoritative transition used by the      |
+//| reference EA (notably the basket-size -> zero journal event).     |
+//+------------------------------------------------------------------+
+void ReconcilePositionCount()
+  {
+   int count = CountMyPositions();
+   if(count == g_lastPositionCount)
+      return;
+
+   int previousCount = g_lastPositionCount;
+   g_lastPositionCount = count;
+
+   Print(SEP_LIGHT);
+   Print("Position count changed: ", (string)previousCount, " → ", (string)count);
+   Print(SEP_LIGHT);
+
+   if(count == 0)
+      SwitchToEntryTimeframe();
+  }
+
+//+------------------------------------------------------------------+
 //| Expert initialization                                            |
 //+------------------------------------------------------------------+
 int OnInit()
@@ -642,6 +667,7 @@ void OnDeinit(const int reason)
 void OnTick()
   {
    ManagePositions();
+   ReconcilePositionCount();
    CheckEntrySignal();
   }
 
@@ -889,6 +915,17 @@ void ManagePositions()
 //+------------------------------------------------------------------+
 void CheckEntrySignal()
   {
+   // Consume every entry-timeframe bar, including bars that occur while a
+   // basket is being managed.  The previous reconstruction performed this
+   // check only after confirming that no position existed.  Consequently,
+   // a basket closed mid-bar could immediately re-enter on that same bar,
+   // shifting every subsequent signal and eventually producing the runaway
+   // martingale sequence seen in LOG_FILE_1.
+   datetime barTime = iTime(_Symbol, EntryTF(), 0);
+   if(barTime <= 0 || barTime == g_lastEntryBarTime)
+      return;
+   g_lastEntryBarTime = barTime;
+
    if(g_tradingLocked || g_forceClosing || g_monitorActive || g_bepActive)
       return;
    if(!InTradingWindow() || !LeverageOK())
@@ -901,11 +938,6 @@ void CheckEntrySignal()
       return;
    if(InpEnableSpreadFilter && CurrentSpreadPoints(tick) > (double)InpMaximumSpread)
       return;
-
-   datetime barTime = iTime(_Symbol, EntryTF(), 0);
-   if(barTime <= 0 || barTime == g_lastEntryBarTime)
-      return;
-   g_lastEntryBarTime = barTime;
 
    double closePrev   = iClose(_Symbol, EntryTF(), 1);
    double closePrev2  = iClose(_Symbol, EntryTF(), 2);
