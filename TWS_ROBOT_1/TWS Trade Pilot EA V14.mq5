@@ -938,37 +938,41 @@ void CheckEntrySignal()
    if(InpEnableSpreadFilter && CurrentSpreadPoints(tick) > (double)InpMaximumSpread)
       return;
 
-   double closePrev   = iClose(_Symbol, EntryTF(), 1);
-   double closePrev2  = iClose(_Symbol, EntryTF(), 2);
-   if(closePrev <= 0.0 || closePrev2 <= 0.0)
+   // The reference evaluates the just-opened bar at its first live tick.
+   // LOG_FILE_1 evaluated bar 1 instead, producing SELL at 01:00:01 where
+   // the reference produced BUY and anchoring the first basket at 4074.09
+   // instead of the observed live signal price 4073.98.
+   double closeCurrent = iClose(_Symbol, EntryTF(), 0);
+   double closePrev    = iClose(_Symbol, EntryTF(), 1);
+   if(closeCurrent <= 0.0 || closePrev <= 0.0)
       return;
 
-   //--- CopyBuffer fills non-series arrays oldest-first:
-   //--- emaBuf[0] = bar 2, emaBuf[1] = bar 1
+   // CopyBuffer writes the oldest requested value first for a non-series
+   // receiver: emaBuf[0] is bar 1 and emaBuf[1] is live bar 0.
    double emaBuf[2];
-   if(CopyBuffer(g_emaHandle, 0, 1, 2, emaBuf) < 2)
+   if(CopyBuffer(g_emaHandle, 0, 0, 2, emaBuf) < 2)
       return;
-   double emaPrev2 = emaBuf[0];
-   double emaPrev  = emaBuf[1];
+   double emaPrev    = emaBuf[0];
+   double emaCurrent = emaBuf[1];
 
-   //--- optional EMA distance filter
+   //--- optional EMA distance filter uses the same live values as entry
    if(InpEnableEmaDistanceFilter &&
-      MathAbs(closePrev - emaPrev) / _Point > (double)InpMaxDistancePoints)
+      MathAbs(closeCurrent - emaCurrent) / _Point > (double)InpMaxDistancePoints)
       return;
 
    int signal = 0;   // 1 = buy, -1 = sell
    if(InpEntryMode == ENTRY_CROSSOVER)
      {
-      if(closePrev2 <= emaPrev2 && closePrev > emaPrev)
+      if(closePrev <= emaPrev && closeCurrent > emaCurrent)
          signal = 1;
-      else if(closePrev2 >= emaPrev2 && closePrev < emaPrev)
+      else if(closePrev >= emaPrev && closeCurrent < emaCurrent)
          signal = -1;
      }
    else
      {
-      if(closePrev > emaPrev)
+      if(closeCurrent > emaCurrent)
          signal = 1;
-      else if(closePrev < emaPrev)
+      else if(closeCurrent < emaCurrent)
          signal = -1;
      }
 
@@ -1000,7 +1004,7 @@ void CheckEntrySignal()
    Print(EQ_ENTRY);
 
    double lot = ApplyMaxLot(InpInitialLot);
-   g_lastSignalPrice = closePrev;
+   g_lastSignalPrice = closeCurrent;
 
    bool sent = false;
    if(signal > 0)
