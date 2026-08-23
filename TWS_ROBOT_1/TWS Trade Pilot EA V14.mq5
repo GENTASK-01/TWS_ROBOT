@@ -3,7 +3,7 @@
 //|                                     Copyright 2026, Official TWS |
 //| Build Target: MetaTrader 5 Build 6140                            |
 //| Resolution: BMER-PROMPT-v1.0 | Mode: A                          |
-//| Session: Iteration 1                                             |
+//| Session: Iteration 2                                             |
 //+------------------------------------------------------------------+
 #property copyright "Official TWS"
 #property link      "https://www.tradewithsanchit.com"
@@ -139,7 +139,7 @@ input bool            InpEnableTradeHistory      = true;             // Enable T
 #define EQ_ENTRY    "========================"
 #define EQ_OPENED   "======================="
 #define EQ_MART     "========================="
-#define EQ_PYR      "====================="
+#define EQ_PYR      "======================"
 #define BOX_TOP     "╔═══════════════════════════════════════╗"
 #define BOX_FORCE   "║  🚨 FORCE CLOSE ALL - AGGRESSIVE MODE ║"
 #define BOX_CLOSEBY "║  🎯 CLOSEBY HEDGE OPTIMIZATION        ║"
@@ -324,17 +324,37 @@ double GroupProfitUSD()
   }
 
 //+------------------------------------------------------------------+
-//| Update incremental running average with a newly opened position  |
-//| (reproduces the exact double artifacts seen in the journal, e.g. |
-//| 4072.1400000000003 and 4070.18)                                  |
+//| Recompute basket state from live positions: volume-weighted      |
+//| average entry plus position count.  Accumulation walks the       |
+//| position pool from the newest index down, exactly reproducing    |
+//| the double artifacts seen in the journal - e.g. the weighted     |
+//| averages 4072.1400000000003 (two equal lots) and                 |
+//| 4060.8481818181835 (an eight-position basket whose /11 repeating |
+//| tail proves weighting by 0.11 total lots, not an arithmetic      |
+//| mean, which would read 4063.58).                                 |
 //+------------------------------------------------------------------+
-void UpdateAverageEntry(const double openPrice)
+void RecomputeGroupAverage()
   {
-   g_groupPositionCount++;
-   if(g_groupPositionCount == 1)
-      g_avgEntry = openPrice;
-   else
-      g_avgEntry = g_avgEntry + (openPrice - g_avgEntry) / g_groupPositionCount;
+   double priceVolSum = 0.0;
+   double volumeSum   = 0.0;
+   int    counted     = 0;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+     {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0)
+         continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol)
+         continue;
+      if(PositionGetInteger(POSITION_MAGIC) != InpMagicNumber)
+         continue;
+      double volume    = PositionGetDouble(POSITION_VOLUME);
+      double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+      priceVolSum += openPrice * volume;
+      volumeSum   += volume;
+      counted++;
+     }
+   g_groupPositionCount = counted;
+   g_avgEntry           = (volumeSum > 0.0) ? priceVolSum / volumeSum : 0.0;
   }
 
 //+------------------------------------------------------------------+
@@ -680,6 +700,7 @@ void ManagePositions()
    if(!SymbolInfoTick(_Symbol, tick))
       return;
 
+   RecomputeGroupAverage();
    int count = CountMyPositions();
 
    //--- 1. Break Even Protection activation
@@ -725,22 +746,11 @@ void ManagePositions()
       g_peakProfitPoints = GroupProfitPoints(tick);
      }
 
-   //--- 3. SL monitor header block (only while positions exist)
-   if(InpEnableDetailedLog && g_monitorActive && count > 0)
-     {
-      Print(SEP_HEAVY);
-      Print("🎯 SL MONITOR ACTIVATED");
-      Print(SEP_HEAVY);
-      Print(ModeLine());
-      Print("SL Price: ", DblToStrRT(g_slTarget));
-      Print("Direction: ", g_groupDirection == POSITION_TYPE_BUY ? "BUY" : "SELL");
-      Print("Avg Entry: ", DblToStrRT(g_avgEntry));
-      Print("Positions: ", (string)count);
-      Print("Initial Tickets: ", (string)ArraySize(g_initialTickets));
-      Print(SEP_HEAVY);
-     }
-
-   //--- 4. Client-side SL protection (runs even if basket vanished this tick)
+   //--- 3. Client-side SL protection (runs even if basket vanished this tick)
+   // The reference evaluates the client stop BEFORE printing the SL
+   // monitor header and BEFORE any server-side synchronisation: on a
+   // hitting tick the journal shows the CLIENT-SIDE SL HIT block with
+   // no SL MONITOR header and no modify attempts on that tick.
    if(g_monitorActive && InpEnableClientSideSL && g_groupDirection >= 0)
      {
       bool   hit         = false;
@@ -776,6 +786,21 @@ void ManagePositions()
          UnlockTrading("SL hit handled");
          return;
         }
+     }
+
+   //--- 4. SL monitor header block (only while positions exist)
+   if(InpEnableDetailedLog && g_monitorActive && count > 0)
+     {
+      Print(SEP_HEAVY);
+      Print("🎯 SL MONITOR ACTIVATED");
+      Print(SEP_HEAVY);
+      Print(ModeLine());
+      Print("SL Price: ", DblToStrRT(g_slTarget));
+      Print("Direction: ", g_groupDirection == POSITION_TYPE_BUY ? "BUY" : "SELL");
+      Print("Avg Entry: ", DblToStrRT(g_avgEntry));
+      Print("Positions: ", (string)count);
+      Print("Initial Tickets: ", (string)ArraySize(g_initialTickets));
+      Print(SEP_HEAVY);
      }
 
    //--- 5. Server-side SL synchronization + status block
@@ -857,7 +882,12 @@ void ManagePositions()
    if(InpEnableMartingale && g_martingaleCount < InpMartingaleMaxOrders &&
       g_lastSignalPrice > 0.0)
      {
-      double currentSignalPrice = iClose(_Symbol, EntryTF(), 0);
+      // Martingale spacing is measured against the same side-based
+      // tick price the basket is anchored on (ask for BUY, bid for
+      // SELL), not the bar close.  The journal shows consecutive BUY
+      // anchors exactly 400 points apart on the ask (4073.98 / 4069.98)
+      // and SELL anchors chained at the bid (4068.18 / 4072.40 / ...).
+      double currentSignalPrice = (g_groupDirection == POSITION_TYPE_SELL) ? tick.bid : tick.ask;
       if(currentSignalPrice > 0.0)
         {
          bool martingaleSignal = false;
@@ -939,10 +969,10 @@ void CheckEntrySignal()
    if(InpEnableSpreadFilter && CurrentSpreadPoints(tick) > (double)InpMaximumSpread)
       return;
 
-   // The reference evaluates the just-opened bar at its first live tick.
-   // LOG_FILE_1 evaluated bar 1 instead, producing SELL at 01:00:01 where
-   // the reference produced BUY and anchoring the first basket at 4074.09
-   // instead of the observed live signal price 4073.98.
+   // The reference evaluates the just-opened bar at its first live tick
+   // (live bar 0 close versus live bar 0 EMA).  The basket anchor itself
+   // is taken from the live tick of the traded side - see the
+   // g_lastSignalPrice assignment below.
    double closeCurrent = iClose(_Symbol, EntryTF(), 0);
    double closePrev    = iClose(_Symbol, EntryTF(), 1);
    if(closeCurrent <= 0.0 || closePrev <= 0.0)
@@ -1005,7 +1035,16 @@ void CheckEntrySignal()
    Print(EQ_ENTRY);
 
    double lot = ApplyMaxLot(InpInitialLot);
-   g_lastSignalPrice = closeCurrent;
+
+   // The reference anchors the basket on the live tick price of the
+   // traded side - ask for BUY, bid for SELL.  The first BUY basket is
+   // anchored at the ask 4073.98 while the same tick's bar close reads
+   // 4073.70, and SELL baskets anchor on the bid (e.g. 4076.17 for the
+   // 2026.08.04 14:53:00 entry).  Anchoring on the bar close offsets
+   // every BUY anchor by the spread (~28-29 points), shifts martingale
+   // and break-even timings and ultimately collapses an entire basket
+   // chain, as evidenced by the catastrophic generated run.
+   g_lastSignalPrice = (signal > 0) ? tick.ask : tick.bid;
 
    bool sent = false;
    if(signal > 0)
@@ -1016,12 +1055,11 @@ void CheckEntrySignal()
       return;
 
    ulong  orderTicket = trade.ResultOrder();
-   double filledPrice = trade.ResultPrice();
    g_lastLotUsed = lot;
    if(lot > g_maxLotUsed)
       g_maxLotUsed = lot;
    g_groupDirection = (signal > 0) ? POSITION_TYPE_BUY : POSITION_TYPE_SELL;
-   UpdateAverageEntry(filledPrice);
+   RecomputeGroupAverage();
 
    Print("=== POSITION OPENED ===");
    Print("Direction Mode: ", DirectionWord());
@@ -1070,12 +1108,11 @@ void OpenMartingale(const MqlTick &tick, const double signalPrice)
    if(!sent || trade.ResultRetcode() != TRADE_RETCODE_DONE)
       return;
 
-   double filledPrice = trade.ResultPrice();
    g_lastSignalPrice  = signalPrice;
    g_lastLotUsed      = lot;
    if(lot > g_maxLotUsed)
       g_maxLotUsed = lot;
-   UpdateAverageEntry(filledPrice);
+   RecomputeGroupAverage();
 
    Print("=== MARTINGALE OPENED ===");
    Print(ModeLine());
@@ -1109,12 +1146,11 @@ void OpenPyramid(const MqlTick &tick)
       return;
 
    g_pyramidCount++;
-   double filledPrice = trade.ResultPrice();
    g_lastSignalPrice  = iClose(_Symbol, EntryTF(), 1);
    g_lastLotUsed      = lot;
    if(lot > g_maxLotUsed)
       g_maxLotUsed = lot;
-   UpdateAverageEntry(filledPrice);
+   RecomputeGroupAverage();
    ulong orderTicket = trade.ResultOrder();
 
    Print("=== PYRAMID OPENED ===");
