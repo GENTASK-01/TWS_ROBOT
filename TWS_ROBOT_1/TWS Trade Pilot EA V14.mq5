@@ -3,6 +3,7 @@
 //|                                     Copyright 2026, Official TWS |
 //| Build Target: MetaTrader 5 Build 6140                            |
 //| Resolution: BMER-PROMPT-v1.0 | Mode: A                          |
+//| Session: Iteration 1                                             |
 //+------------------------------------------------------------------+
 #property copyright "Official TWS"
 #property link      "https://www.tradewithsanchit.com"
