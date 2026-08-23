@@ -1,2 +1,4 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+# MetaEditor MQL5 sources must keep Windows CRLF line endings
+*.mq5 text eol=crlf
