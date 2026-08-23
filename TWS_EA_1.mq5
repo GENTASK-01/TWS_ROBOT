@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//|                                      TWS Trade Pilot EA V14.mq5 |
+//|                                                      TWS_EA_1.mq5 |
 //|                                     Copyright 2026, Official TWS |
 //| Build Target: MetaTrader 5 Build 6140                            |
 //| Generated: Complete reconstruction with full S2+S3+S4 pipeline   |
