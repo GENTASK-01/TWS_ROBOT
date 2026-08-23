@@ -1,10 +1,9 @@
 //+------------------------------------------------------------------+
-//|                                                      TWS_EA_1.mq5 |
+//|                                TWS Trade Pilot EA V14.mq5         |
 //|                                     Copyright 2026, Official TWS |
 //| Build Target: MetaTrader 5 Build 6140                            |
-//| Generated: Complete reconstruction with full S2+S3+S4 pipeline   |
-//| Resolution: BMER-PROMPT-v1.0 | Mode: B                          |
-//| Session: Iteration 1                                             |
+//| Resolution: BMER-PROMPT-v1.0 | Mode: A                          |
+//| Session: Iteration 2                                             |
 //+------------------------------------------------------------------+
 #property copyright "Official TWS"
 #property link      "https://www.tradewithsanchit.com"
@@ -432,7 +431,7 @@ void ResetTracking()
    g_maxLotUsed         = 0.0;
    g_maxLotReached      = false;
    g_lastSignalPrice    = 0.0;
-   Print("🔄 All tracking variables reset - " + DirectionWord());
+   Print("🔄 All tracking variables reset - Mode: " + DirectionWord());
   }
 
 //+------------------------------------------------------------------+
@@ -514,6 +513,9 @@ int OnInit()
    trade.SetTypeFilling(ORDER_FILLING_IOC);
    trade.SetDeviationInPoints(InpEnableSlippageControl ? (ulong)InpMaximumSlippage : (ulong)10);
    trade.SetAsyncMode(false);
+   // The reference EA keeps CTrade's internal diagnostics out of the
+   // expert journal; only its own stable, user-facing messages are emitted.
+   trade.LogLevel(LOG_LEVEL_NO);
 
    g_emaHandle = iMA(_Symbol, EntryTF(), InpEmaPeriod, InpEmaShift, InpEmaMethod, InpEmaPrice);
    if(g_emaHandle == INVALID_HANDLE)
@@ -822,11 +824,26 @@ void ManagePositions()
         }
      }
 
-   //--- 7. Martingale averaging (tick based)
-   if(InpEnableMartingale && g_martingaleCount < InpMartingaleMaxOrders)
+   //--- 7. Martingale averaging (tick based, spaced from the last entry)
+   // The distance is measured from the signal price of the most recently
+   // opened order, not from the moving basket average.  Measuring from the
+   // average repeatedly fires orders on adjacent ticks as the average moves.
+   if(InpEnableMartingale && g_martingaleCount < InpMartingaleMaxOrders &&
+      g_lastSignalPrice > 0.0)
      {
-      if(GroupProfitPoints(tick) <= -(double)InpMartingaleDistancePoints)
-         OpenMartingale(tick);
+      double currentSignalPrice = iClose(_Symbol, EntryTF(), 0);
+      if(currentSignalPrice > 0.0)
+        {
+         bool martingaleSignal = false;
+         if(g_groupDirection == POSITION_TYPE_BUY)
+            martingaleSignal = (currentSignalPrice <= g_lastSignalPrice -
+                                (double)InpMartingaleDistancePoints * _Point);
+         else if(g_groupDirection == POSITION_TYPE_SELL)
+            martingaleSignal = (currentSignalPrice >= g_lastSignalPrice +
+                                (double)InpMartingaleDistancePoints * _Point);
+         if(martingaleSignal)
+            OpenMartingale(tick, currentSignalPrice);
+        }
      }
 
    //--- 8. Trailing stop hit (peak retracement)
@@ -984,7 +1001,7 @@ void CheckEntrySignal()
 //+------------------------------------------------------------------+
 //| Open a martingale averaging position                             |
 //+------------------------------------------------------------------+
-void OpenMartingale(const MqlTick &tick)
+void OpenMartingale(const MqlTick &tick, const double signalPrice)
   {
    if(InpEnableMartingaleRsiFilter)
      {
@@ -1018,7 +1035,7 @@ void OpenMartingale(const MqlTick &tick)
       return;
 
    double filledPrice = trade.ResultPrice();
-   g_lastSignalPrice  = iClose(_Symbol, EntryTF(), 1);
+   g_lastSignalPrice  = signalPrice;
    g_lastLotUsed      = lot;
    if(lot > g_maxLotUsed)
       g_maxLotUsed = lot;
